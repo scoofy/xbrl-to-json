@@ -1,6 +1,8 @@
 # xbrl-to-json
 Simple Python3 program to download and convert SEC XBRL datafiles to JSON format
 
+Note: this will save a download a copy of the xbrl data and save a relevant json file created from that copy.
+
 Firstly, and most importantly, there is significant work to be done regarding large text data:
 
 Look for this block of code in the function: convert_xbrl_tree_and_ns_to_dict()
