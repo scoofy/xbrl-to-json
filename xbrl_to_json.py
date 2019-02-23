@@ -1,7 +1,8 @@
-import os, logging, datetime, json
+import sys, os, logging, datetime, json
 import urllib.request
 import bs4
 import xml.etree.ElementTree as ET
+import pprint as pp
 
 def return_url_request_data(url, values_dict={}, secure=False):
     headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_2) AppleWebKit/601.3.9 (KHTML, like Gecko) Version/9.0.2 Safari/601.3.9"}
@@ -102,6 +103,41 @@ def iso_date_to_datetime(date_str):
     'iso date to datetime'
     return datetime.date(int(date_str.split("-")[0]), int(date_str.split("-")[1]), int(date_str.split("-")[2]))
 
+def return_all_xbrl_context_element_tree_items(context_element_tree):
+    list_to_return = []
+    for item in context_element_tree:
+        if len(item) > 1:
+            return return_all_xbrl_context_element_tree_items(item)
+        else:
+            list_to_return.append(item)
+    return list_to_return
+
+total_count = 0
+def elem_tree_recursive(root_elem, tag=None, count=0):
+    elem = root_elem
+    elem_dict = {}
+    text = elem.text
+    attrib = elem.attrib
+    #elem_dict["tag"] = elem.tag
+    if text and str(text).strip():
+        elem_dict["text"] = text.strip()
+    if attrib:
+        elem_dict["attrib"] = attrib
+    if len(list(elem)):
+        children_list = []
+        for index, child  in enumerate(list(elem)):
+            child_dict = {child.tag: elem_tree_recursive(child, tag=child.tag, count = count + 1)}
+            children_list.append(child_dict)
+        elem_dict["children"] = children_list
+
+    if tag == None:
+        root_tag = elem.tag
+        return {root_tag: elem_dict}
+    else:
+        return elem_dict
+
+
+
 def convert_xbrl_tree_and_ns_to_dict(xbrl_tree, namespace, file_name, ticker, cik):
     DEFAULT_CONTEXT_TAG = "{http://www.xbrl.org/2003/instance}context"
     DEFAULT_ENTITY_TAG = "{http://www.xbrl.org/2003/instance}entity"
@@ -110,147 +146,9 @@ def convert_xbrl_tree_and_ns_to_dict(xbrl_tree, namespace, file_name, ticker, ci
 
     tree = xbrl_tree
     root = tree.getroot()
-    ns = namespace
-    reverse_ns = {v: k for k, v in ns.items()}
-    # get CIK for stock, else return empty dict
-    try:
-        context_tag = tree.find(DEFAULT_CONTEXT_TAG, ns)
-        entity_tag = context_tag.find(DEFAULT_ENTITY_TAG, ns)
-        identifier_tag = entity_tag.find(DEFAULT_IDENTIFIER_TAG, ns)
-        cik = identifier_tag.text
-    except:
-        logging.error('CIK could not be found for: {}'.format(file_name))
-        return None
-
-    context_element_list = None
-    for identifier_tag in [DEFAULT_IDENTIFIER_TAG,
-                           "xbrli:context",
-                           "context",
-                          ]:
-        try:
-            context_element_list = tree.findall(identifier_tag, ns)
-        except:
-            pass
-        if context_element_list:
-            break
-
-    if not context_element_list:
-        logging.info("Improperly formatted XBRL file. Will try to parse with common made errors...")
-        potential_identifier_tag_list = []
-        root = tree.getroot()
-        logging.warning(root.tag)
-        logging.warning(root.attrib)
-        for child in root:
-            if 'context' in child.tag:
-                if child.tag not in potential_identifier_tag_list:
-                    potential_identifier_tag_list.append(child.tag)
-        for identifier_tag in potential_identifier_tag_list:
-            context_element_list = tree.findall(identifier_tag)
-
-    if not context_element_list:
-        logging.error(context_element_list)
-        logging.error(ns)
-        logging.error("XBRL file could not be parsed: {}".format(file_name))
-        sys.exit()
-        return
-
-    xbrl_stock_dict = {ticker: {}}
-
-    for element in context_element_list:
-        period_dict = dict()
-        dimension = None
-        dimension_value = None
-        previous_entry = None
-        # get period first:
-        period_element = element.find(DEFAULT_PERIOD_TAG)
-        for item in period_element.iter():
-            # a lot of these datetimes have leading and trailing \n's
-            formatted_item = str(item.text).strip().replace("\n", "")
-            if "T" in formatted_item: # someone put time in the date str
-                formatted_item = formatted_item.split("T")[0]
-            if "startDate" in item.tag:
-                period_dict["startDate"] = formatted_item
-            elif "endDate" in item.tag:
-                period_dict["endDate"] = formatted_item
-            elif "instant" in item.tag:
-                period_dict["instant"] = formatted_item
-            elif "forever" in item.tag:
-                period_dict["forever"] = formatted_item
-
-        if not period_dict:
-            logging.error("No period")
-        else:
-            # logging.warning(period_dict)
-            pass
-
-        # datetime YYYY-MM-DD
-        datetime_delta = None
-        if period_dict.get("startDate"):
-            start_date = period_dict.get("startDate")
-            end_date = period_dict.get("endDate")
-            if start_date != end_date:
-                period_serialized = end_date + ":" + start_date
-            else:
-                period_serialized = end_date
-            start_datetime = iso_date_to_datetime(start_date)
-            end_datetime = iso_date_to_datetime(end_date)
-            datetime_delta = end_datetime - start_datetime
-            datetime_to_save = end_datetime
-            iso_date_to_save = end_date
-            iso_start_date = start_date
-        elif period_dict.get("instant"):
-            instant = period_dict.get("instant")
-            period_serialized = instant
-            instant_datetime = iso_date_to_datetime(instant)
-            datetime_to_save = instant_datetime
-            iso_date_to_save = instant
-        elif period_dict.get("forever"):
-            forever = period_dict.get("forever")
-            period_serialized = forever
-            forever_datetime = iso_date_to_datetime(forever)
-            datetime_to_save = forever_datetime
-            iso_date_to_save = forever
-        else:
-            logging.error("no period_serialized")
-            period_serialized = None
-            datetime_to_save = None
-
-        context_id = element.get("id")
-        context_ref_list = [x for x in root if x.get("contextRef") == context_id]
-        for context_element in context_ref_list:
-            # these text attributes are a mess, so i ignore them
-            if "TextBlock" in str(context_element.tag):
-                continue
-            elif "&lt;" in str(context_element.text):
-                continue
-            elif "<div " in str(context_element.text) and "</div>" in str(context_element.text):
-                continue
-
-            tag = context_element.tag
-            split_tag = tag.split("}")
-            if len(split_tag) > 2:
-                logging.error(split_tag)
-            institution = reverse_ns.get(split_tag[0][1:])
-            accounting_item = split_tag[1]
-            # lots of problems with new lines in this
-            value = str(context_element.text).strip().replace("\n","")
-            unitRef = context_element.get("unitRef")
-            decimals = context_element.get("decimals")
-            if not xbrl_stock_dict[ticker].get(institution):
-                xbrl_stock_dict[ticker][institution] = {accounting_item: {period_serialized: {"value": value}}}
-            elif xbrl_stock_dict[ticker][institution].get(accounting_item) is None:
-                xbrl_stock_dict[ticker][institution][accounting_item] = {period_serialized: {"value": value}}
-            else:
-                xbrl_stock_dict[ticker][institution][accounting_item].update({period_serialized: {"value": value}})
-            period_dict = xbrl_stock_dict[ticker][institution][accounting_item][period_serialized]
-            period_dict.update({"datetime": iso_date_to_save})
-            if datetime_delta:
-                period_dict.update({"timedeltastart": iso_start_date})
-            if unitRef:
-                period_dict.update({"unitRef": unitRef})
-            if decimals:
-                period_dict.update({"decimals": decimals})
-    return(xbrl_stock_dict)
+    tree = ET.parse(file_name)
+    tree_dict = elem_tree_recursive(root)
+    return tree_dict
 
 def write_dict_as_json(xbrl_dict, ticker, data_date):
     with open('{}_xbrl_data_{}.json'.format(ticker, data_date), 'w') as outfile:
@@ -270,7 +168,19 @@ def xbrl_to_json(ticker, cik, form_type = "10-K", year = None, month = None, day
     xbrl_dict = convert_xbrl_tree_and_ns_to_dict(xbrl_tree, namespace, xbrl_filename, ticker, cik)
     write_dict_as_json(xbrl_dict, ticker, data_date)
 
-#if __name__ == "__main__":
-#    testing_appl = False
-#    if testing_appl:
-#        xbrl_to_json("aapl", 320193)
+"""
+if __name__ == "__main__":
+    testing_appl = False
+    if testing_appl:
+        ticker = 'aapl'
+        cik = 320193
+        apple_file_base_str = "aapl-20180929"
+        file_type_list = [".xsd", "", "_cal", "_def", "_lab", "_pre"]
+        for file_type in file_type_list:
+            xbrl_filename = "{}/{}{}.xml".format(apple_file_base_str, apple_file_base_str, file_type)
+            if file_type == ".xsd":
+                xbrl_filename = xbrl_filename.replace(".xml", "")
+            xbrl_tree, namespace = extract_xbrl_namespace_and_tree(xbrl_filename)
+            xbrl_dict = convert_xbrl_tree_and_ns_to_dict(xbrl_tree, namespace, xbrl_filename, ticker, cik)
+            write_dict_as_json(xbrl_dict, 'aapl-20180929/aapl-20180929{}'.format(file_type), "TEST")
+"""
