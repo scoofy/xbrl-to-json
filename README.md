@@ -1,35 +1,12 @@
 # xbrl-to-json
-Simple Python3 program to download and convert SEC XBRL datafiles to JSON format
+Simple Python3 program to convert SEC XBRL datafiles to JSON format
 
-Note: this will save a download a copy of the xbrl data and save a relevant json file created from that copy.
+to run at the current iteration, you'll need the ticker and the CIK, and folder name, then simply run:
 
-Firstly, and most importantly, there is significant work to be done regarding large text data:
+xbrl_to_json.main_xbrl_to_json_converter(ticker, cik, foldername)
 
-Look for this block of code in the function: convert_xbrl_tree_and_ns_to_dict()
+I used the anytree node module because it deals with a lot of the inherent problems between markup xbrl and key,value json.
 
-        for context_element in context_ref_list:
-            # these text attributes are a mess, so i ignore them
-            if "TextBlock" in str(context_element.tag):
-                continue
-            elif "&lt;" in str(context_element.text):
-                continue
-            elif "<div " in str(context_element.text) and "</div>" in str(context_element.text):
-                continue
+Note, this program converts anytree tree structure into json, but it's readable, and the tree structure is usable in python for purposes.
 
-I haven't sorted that out, but otherwise, it should extract data very well. I would appreciate it if someone could try it out and let me know if you get any errors.
-
-to run at the current iteration, you'll need the ticker and the CIK, then simply run:
-
-xbrl_to_json.xbrl_to_json(ticker, cik)
-
-to get the latest 10-K. If you want to be more specific with form-type and date, here are some different arguments you can pass:
-
-xbrl_to_json.xbrl_to_json(
-    ticker,
-    cik,
-    form_type = "10-K",
-    year = None,
-    month = None,
-    day = None,
-    )
-
+I'll be expaning an api soon to work with wxstocks.
