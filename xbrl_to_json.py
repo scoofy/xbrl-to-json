@@ -36,7 +36,8 @@ def main_xbrl_to_json_converter(ticker, cik, folder_name):
         root_node_dict[extension[1:]] = root_node
     collect_relevant_prefixes("{}/{}{}".format(folder_name, folder_name, extensions_list[0]))
     fact_tree_root = fact_centric_xbrl_processor(root_node_dict, ticker)
-    xbrl_to_json_processor(folder_name + "_root_node", fact_tree_root)
+    root_node = xbrl_to_json_processor(folder_name + "_root_node", fact_tree_root)
+    return root_node
 
 def return_refernce_node(node, fact_tree_root, other_tree_root):
     fact_node = None
@@ -665,16 +666,20 @@ def full_sec_xbrl_folder_download(cik, form_type, date="most recent"):
     logging.info("xbrl files created")
     return folder_name
 
+def main_download_and_convert(ticker, cik, form_type):
+    folder_name, data_date = full_sec_xbrl_folder_download(cik, form_type)
+    xbrl_tree_root = main_xbrl_to_json_converter(ticker, cik, folder_name)
+    return xbrl_tree_root
+
 
 
 if __name__ == "__main__":
     testing_appl = False
     if testing_appl:
-        form_type = "10-K"
         ticker = 'aapl'
         cik = 320193
-        folder_name, data_date = full_sec_xbrl_folder_download(cik, form_type)
-        main_xbrl_to_json_converter(ticker, cik, folder_name)
+        form_type = "10-K"
+        xbrl_tree_root = main_download_and_convert(ticker, cik, form_type)
 
 
 
