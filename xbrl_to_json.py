@@ -14,7 +14,7 @@ clarks_to_ignore = ['http://www.w3.org/2001/XMLSchema',
 
 prefixes_that_matter = set()
 
-def main_xbrl_to_json_converter(ticker, cik, foldername):
+def main_xbrl_to_json_converter(ticker, cik, folder_name):
     extensions_list = [".xml",
                        ".xsd",
                        "_lab.xml",
@@ -24,7 +24,7 @@ def main_xbrl_to_json_converter(ticker, cik, foldername):
                        ]
     root_node_dict = {}
     for extension in extensions_list:
-        xbrl_filename = "{}/{}{}".format(foldername, foldername, extension)
+        xbrl_filename = "{}/{}{}".format(folder_name, folder_name, extension)
         try:
             json_data = import_json(xbrl_filename)
             root_node = convert_dict_to_node_tree(json_data)
@@ -34,9 +34,9 @@ def main_xbrl_to_json_converter(ticker, cik, foldername):
             root_node = xbrl_to_json_processor(xbrl_filename)
             logging.info("done")
         root_node_dict[extension[1:]] = root_node
-    collect_relevant_prefixes("{}/{}{}".format(foldername, foldername, extensions_list[0]))
+    collect_relevant_prefixes("{}/{}{}".format(folder_name, folder_name, extensions_list[0]))
     fact_tree_root = fact_centric_xbrl_processor(root_node_dict, ticker)
-    xbrl_to_json_processor(foldername + "_root_node", fact_tree_root)
+    xbrl_to_json_processor(folder_name + "_root_node", fact_tree_root)
 
 def return_refernce_node(node, fact_tree_root, other_tree_root):
     fact_node = None
@@ -572,15 +572,109 @@ def write_dict_as_json(dict_to_write, xbrl_filename):
     with open('{}.json'.format(xbrl_filename), 'w') as outfile:
         json.dump(dict_to_write, outfile, indent=2)
 
+#### xbrl from sec ####
+
+def return_url_request_data(url, values_dict={}, secure=False, sleep=1):
+    time.sleep(sleep)
+    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_2) AppleWebKit/601.3.9 (KHTML, like Gecko) Version/9.0.2 Safari/601.3.9"}
+    http__prefix = "http://"
+    https_prefix = "https://"
+    if secure:
+        url_prefix = https_prefix
+    else:
+        url_prefix = http__prefix
+    if "http://" in url or "https://" in url:
+        url_prefix = ""
+    url = url_prefix + url
+    encoded_url_extra_values = urllib.parse.urlencode(values_dict)
+    data = encoded_url_extra_values.encode('utf-8')
+    #logging.warning("\n{}\n{}\n{}".format(url, data, headers))
+    if data:
+        request = urllib.request.Request(url, data, headers=headers)
+    else:
+        request = urllib.request.Request(url, headers=headers)
+    response = urllib.request.urlopen(request) # get request
+    response_data = response.read().decode('utf-8')
+    return response_data
+
+def sec_xbrl_single_stock(cik, form_type):
+    base_url = "https://www.sec.gov/cgi-bin/browse-edgar"
+    values =   {"action": "getcompany",
+                "CIK": cik,
+                "type": form_type,
+                }
+    response_data = return_url_request_data(base_url, values, secure=True)
+    return response_data
+
+def parse_sec_results_page(sec_response_data, date="most recent"):
+    soup = bs4.BeautifulSoup(sec_response_data, 'html.parser')
+    table_list = soup.find_all("table", {"summary": "Results"})
+    #logging.info(len(table_list))
+    if not len(table_list) == 1:
+        logging.error("something's up here")
+    table = table_list[0]
+    document_button_list = table.find_all("a", {"id":"documentsbutton"})
+    if date == "most recent":
+        relevant_a_tag = table.find("a", {"id":"documentsbutton"})
+    else:
+        relevant_td = table.find_all("td", string="{}-{}-{}".format(year, month, day))
+        relevant_td_parent = relevant_td.parent
+        relevant_a_tag = relevant_td_parent.find("a", {"id":"documentsbutton"})
+    relevant_a_href = relevant_a_tag['href']
+    sec_url = "https://www.sec.gov"
+    relevant_xbrl_url = sec_url + relevant_a_href
+    return relevant_xbrl_url
+
+def write_xbrl_file(file_name, sec_response_data):
+    with open(file_name, 'w') as outfile:
+        outfile.write(sec_response_data)
+
+def get_xbrl_files_and_return_folder_name(xbrl_data_page_response_data):
+    soup = bs4.BeautifulSoup(xbrl_data_page_response_data, 'html.parser')
+    table_list = soup.find_all("table", {"summary": "Data Files"})
+    if not len(table_list) == 1:
+        logging.error("something's up here")
+    table = table_list[0]
+    a_tag_list = table.find_all("a")
+    sec_url = "https://www.sec.gov"
+    folder_name = None
+    data_date = None
+    for a in a_tag_list:
+        href = a["href"]
+        file_name = a.text
+        if not folder_name:
+            if "_" not in file_name:
+                folder_name = file_name.split(".")[0]
+                data_date = folder_name.split("-")[1]
+        file_name = folder_name + "/" + file_name
+        if not os.path.exists(folder_name):
+            os.makedirs(folder_name)
+        full_url = sec_url + href
+        response_data = return_url_request_data(full_url)
+        write_xbrl_file(file_name, response_data)
+    return folder_name, data_date
+
+def full_sec_xbrl_folder_download(cik, form_type, date="most recent"):
+    response_data = sec_xbrl_single_stock(cik, form_type)
+    logging.info("sec response_data gathered")
+    relevant_xbrl_url = parse_sec_results_page(response_data, date=date)
+    logging.info("precise url found")
+    xbrl_data_page_response_data = return_url_request_data(relevant_xbrl_url)
+    logging.info("xbrl data downloaded")
+    folder_name = get_xbrl_files_and_return_folder_name(xbrl_data_page_response_data)
+    logging.info("xbrl files created")
+    return folder_name
+
 
 
 if __name__ == "__main__":
     testing_appl = False
     if testing_appl:
+        form_type = "10-K"
         ticker = 'aapl'
         cik = 320193
-        foldername = "aapl-20180929"
-    main_xbrl_to_json_converter(ticker, cik, foldername)
+        folder_name, data_date = full_sec_xbrl_folder_download(cik, form_type)
+        main_xbrl_to_json_converter(ticker, cik, folder_name)
 
 
 
