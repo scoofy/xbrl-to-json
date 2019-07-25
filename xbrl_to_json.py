@@ -1,4 +1,4 @@
-import sys, os, logging, datetime, json, time, copy, re, random
+import sys, os, shutil, logging, datetime, json, time, copy, re, random
 import urllib.request
 import bs4, anytree, anytree.exporter, anytree.importer
 import xml.etree.ElementTree as ET
@@ -11,17 +11,12 @@ clarks_to_ignore = ['http://www.w3.org/2001/XMLSchema',
                     'http://xbrl.org/2006/xbrldi',
                     ]
 prefixes_that_matter = set()
-def main_xbrl_to_json_converter(ticker, cik, folder_path):
-    extensions_list = [".xsd",
-                       "_lab.xml",
-                       "_def.xml",
-                       "_pre.xml",
-                       "_cal.xml",
-                       ".xml",
-                       ]
+MONTH_IN_SECONDS = 60.0 * 60 * 24 * 7 * 30
+
+def main_xbrl_to_json_converter(ticker, cik, folder_path, delete_files_after_import=False):
     root_node_dict = {}
     potential_json_filename = "{}.json".format(folder_path)
-    logging.info(potential_json_filename)
+    # logging.info(potential_json_filename)
     try:
         root_json = import_json(potential_json_filename)
         root_node = convert_dict_to_node_tree(root_json)
@@ -42,7 +37,14 @@ def main_xbrl_to_json_converter(ticker, cik, folder_path):
                 logging.info("done")
                 root_node_dict[filename] = root_node
         fact_tree_root = fact_centric_xbrl_processor(root_node_dict, ticker)
-        root_node = xbrl_to_json_processor(potential_json_filename, root_node = fact_tree_root, write_file=True)
+        write_txt_file = not delete_files_after_import # if we're deleting files, lets not save a render.txt file
+        root_node = xbrl_to_json_processor(potential_json_filename, root_node=fact_tree_root, write_file=True, write_txt_file=write_txt_file)
+    if delete_files_after_import:
+        if os.path.isdir(folder_path):
+            shutil.rmtree(folder_path)
+            potential_txt_file = "{}.json_render.txt".format(folder_path)
+            if os.path.isfile(potential_txt_file):
+                os.remove(potential_txt_file)
     return root_node
 def return_refernce_node(node, fact_tree_root, other_tree_root):
     fact_node = None
@@ -161,6 +163,7 @@ def fact_centric_xbrl_processor(root_node_dict, ticker, sort_trash_for_debugging
 
     logging.info("Saving text files")
     start_time = time.time()
+    # the following are for testing:
     #fact_tree_root_filename = ticker + "_facts"
     #root_node_to_rendertree_text_file(fact_tree_root, fact_tree_root_filename)
     #other_tree_root_filename = ticker + "_xbrli"
@@ -425,7 +428,7 @@ def other_tree_node_replacement(attribute_list, fact_tree_root_children):
                 if replacement_node:
                     return replacement_node
     return replacement_node
-def xbrl_to_json_processor(xbrl_filename, root_node=None, write_file=False):
+def xbrl_to_json_processor(xbrl_filename, root_node=None, write_file=False, write_txt_file=False):
     if not (xbrl_filename or root_node):
         logging.error("You must include a either a filename or root_node")
         sys.exit()
@@ -437,7 +440,8 @@ def xbrl_to_json_processor(xbrl_filename, root_node=None, write_file=False):
     if write_file:
         should_be_json_filename = xbrl_filename
         write_dict_as_json(flat_file_dict, should_be_json_filename)
-        root_node_to_rendertree_text_file(root_node, should_be_json_filename)
+        if write_txt_file:
+            root_node_to_rendertree_text_file(root_node, should_be_json_filename)
     return root_node
 def custom_render_tree(root_node):
     output_str = ""
@@ -458,7 +462,7 @@ def custom_render_tree(root_node):
         formatted_str = "{}{}{}{}\n".format(pre, node.name, formatted_fact, formatted_attrib)
         output_str = output_str + "\n" + formatted_str
     return output_str
-def root_node_to_rendertree_text_file(root_node, xbrl_filename, custom = False):
+def root_node_to_rendertree_text_file(root_node, xbrl_filename, custom=False):
     with open('{}_render.txt'.format(xbrl_filename), 'w') as outfile:
             if custom:
                 output_str = custom_render_tree(root_node)
@@ -719,7 +723,7 @@ def full_sec_xbrl_folder_download(ticker, cik, form_type, date="most recent", pr
             return
     logging.info("xbrl files created")
     return folder_name
-def main_download_and_convert(ticker, cik, form_type, year=None, month=None, day=None, force_download=False):
+def main_download_and_convert(ticker, cik, form_type, year=None, month=None, day=None, force_download=False, delete_files_after_import=False):
     given_date = None
     if year and (month and day):
         try:
@@ -741,7 +745,7 @@ def main_download_and_convert(ticker, cik, form_type, year=None, month=None, day
                 folder_name = "{}-{}".format(ticker.lower(), given_date)
                 path = os.path.join(path, folder_name)
                 if os.path.exists(path):
-                    xbrl_tree_root = main_xbrl_to_json_converter(ticker, cik, path)
+                    xbrl_tree_root = main_xbrl_to_json_converter(ticker, cik, path, delete_files_after_import=delete_files_after_import)
                     return xbrl_tree_root
             except Exception as e:
                 logging.warning(e)
@@ -751,28 +755,34 @@ def main_download_and_convert(ticker, cik, form_type, year=None, month=None, day
         # then we will check the last month
         # if there are no files from the last month, we will attempt to download from the SEC
         else:
-            pattern = re.compile(r"[0-9]{8}$")
+            pattern = re.compile(ticker.lower() + r"-[0-9]{8}")
             most_recent_folder_date = 0
             folder_ymd_tuple = None
             for filename in os.listdir(path):
-                logging.info(filename)
-                if ticker in filename:
-                    if pattern.search(filename):
-                        folder_date = filename.split("-")[1]
-                        if int(folder_date) > most_recent_folder_date:
-                            most_recent_folder_date = int(folder_date)
-                            folder_ymd_tuple = (filename, str(most_recent_folder_date)[:4], str(most_recent_folder_date)[4:6], str(most_recent_folder_date)[6:])
+                #logging.info(filename)
+                if filename.endswith(".json"):
+                    if ticker in filename:
+                        if pattern.search(filename):
+                            ticker_hyphen_date = filename.replace(".json", "")
+                            folder_date = ticker_hyphen_date.split("-")[1]
+                            if int(folder_date) > most_recent_folder_date:
+                                most_recent_folder_date = int(folder_date)
+                                folder_ymd_tuple = (ticker_hyphen_date, str(most_recent_folder_date)[:4], str(most_recent_folder_date)[4:6], str(most_recent_folder_date)[6:])
             if folder_ymd_tuple:
                 most_recent_folder_time = time.strptime("{}:{}:{}".format(folder_ymd_tuple[1], folder_ymd_tuple[2], folder_ymd_tuple[3]), "%Y:%m:%d")
                 most_recent_folder_time = time.mktime(most_recent_folder_time)
-                month = 60.0 * 60 * 24 * 7 * 30
                 now = float(time.time())
-                if now < (most_recent_folder_time + month): # if the folder is less than a month old
+                period_seconds = 0
+                if form_type == "10-K":
+                    period_seconds = MONTH_IN_SECONDS * 12
+                elif form_type == "10-Q":
+                    period_seconds = MONTH_IN_SECONDS * 3
+                if now < (most_recent_folder_time + period_seconds): # if the folder is less than expected period for the next form
                     path = os.path.join(path, folder_ymd_tuple[0])
-                    xbrl_tree_root = main_xbrl_to_json_converter(ticker, cik, path)
+                    xbrl_tree_root = main_xbrl_to_json_converter(ticker, cik, path, delete_files_after_import=delete_files_after_import)
                     return xbrl_tree_root
     folder_name, data_date = full_sec_xbrl_folder_download(ticker, cik, form_type, date=given_date)
-    xbrl_tree_root = main_xbrl_to_json_converter(ticker, cik, folder_name)
+    xbrl_tree_root = main_xbrl_to_json_converter(ticker, cik, folder_name, delete_files_after_import=delete_files_after_import)
     return xbrl_tree_root
 #### extract xbrl data from tree ####
 def get_data_node(root_node, attribute_name, date=None, subcategory=None):
@@ -1081,6 +1091,7 @@ if __name__ == "__main__":
     if testing:
         randomize = False
         date_specific = False
+        delete_after_import = True
         stock_ticker = 'aapl'
         form = '10-K'
 
@@ -1102,7 +1113,7 @@ if __name__ == "__main__":
             if date_specific:
                 xbrl_tree_root = main_download_and_convert(stock[0], stock[1], form_type, year=stock[2], month=stock[3], day=stock[4])
             else:
-                xbrl_tree_root = main_download_and_convert(stock[0], stock[1], form_type)
+                xbrl_tree_root = main_download_and_convert(stock[0], stock[1], form_type, delete_files_after_import=delete_after_import)
             stock_list.append(xbrl_tree_root)
 
         stock_choice = [stock for stock in stock_list if stock.name.lower() == stock_ticker.lower()][0]
