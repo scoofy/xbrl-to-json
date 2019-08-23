@@ -851,6 +851,7 @@ def full_sec_xbrl_folder_download(ticker, cik, form_type, date="most recent", pr
             return
     logging.info("xbrl files created")
     return folder_name
+#### main ####
 def main_download_and_convert(ticker, cik, form_type, year=None, month=None, day=None, force_download=False, delete_files_after_import=False):
     given_date = None
     if year and (month and day):
@@ -862,19 +863,21 @@ def main_download_and_convert(ticker, cik, form_type, year=None, month=None, day
         except:
             logging.error("invalid year/month/date input")
     # start by converting to path name
-    path = return_xbrl_data_formatted_folder_path(ticker, form_type)
-    logging.info(path)
-    if not os.path.exists(path):
-        os.makedirs(path)
+    folder_path = return_xbrl_data_formatted_folder_path(ticker, form_type)
+    logging.info(folder_path)
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
     # if we are going to force a download attempt, the following can all be skipped
     if not force_download:
         # if we have a specific date we're looking for, this will do that
         if given_date:
             try:
                 folder_name = "{}-{}".format(ticker.lower(), given_date)
-                path = os.path.join(path, folder_name)
-                if os.path.exists(path):
-                    xbrl_tree_root = main_xbrl_to_json_converter(ticker, cik, given_date, path, delete_files_after_import=delete_files_after_import)
+                full_path = os.path.join(folder_path, folder_name)
+                if os.path.exists(full_path):
+                    xbrl_tree_root = main_xbrl_to_json_converter(ticker, cik, given_date, full_path, delete_files_after_import=delete_files_after_import)
+                    if not os.path.exists("{}_facts_dict.json".format(full_path)):
+                        convert_root_node_facts_to_fact_dict(xbrl_tree_root, ticker, full_path)
                     return xbrl_tree_root
             except Exception as e:
                 logging.warning(e)
@@ -887,7 +890,7 @@ def main_download_and_convert(ticker, cik, form_type, year=None, month=None, day
             pattern = re.compile(ticker.lower() + r"-[0-9]{8}")
             most_recent_folder_date = 0
             folder_ymd_tuple = None
-            for filename in os.listdir(path):
+            for filename in os.listdir(folder_path):
                 #logging.info(filename)
                 #logging.info(pattern.search(filename))
                 if filename.endswith(".json") and "facts_dict" not in filename:
@@ -911,93 +914,48 @@ def main_download_and_convert(ticker, cik, form_type, year=None, month=None, day
                 elif form_type == "10-Q":
                     period_seconds = MONTH_IN_SECONDS * 3
                 if now < (most_recent_folder_time + period_seconds): # if the folder is less than expected period for the next form
-                    path = os.path.join(path, folder_ymd_tuple[0])
-                    xbrl_tree_root = main_xbrl_to_json_converter(ticker, cik, most_recent_folder_date, path, delete_files_after_import=delete_files_after_import)
+                    full_path = os.path.join(folder_path, folder_ymd_tuple[0])
+                    xbrl_tree_root = main_xbrl_to_json_converter(ticker, cik, most_recent_folder_date, full_path, delete_files_after_import=delete_files_after_import)
+                    if not os.path.exists("{}_facts_dict.json".format(full_path)):
+                        convert_root_node_facts_to_fact_dict(xbrl_tree_root, ticker, full_path)
                     return xbrl_tree_root
     folder_name, data_date = full_sec_xbrl_folder_download(ticker, cik, form_type, date=given_date)
     xbrl_tree_root = main_xbrl_to_json_converter(ticker, cik, data_date, folder_name, delete_files_after_import=delete_files_after_import)
     convert_root_node_facts_to_fact_dict(xbrl_tree_root, ticker, folder_name)
     return xbrl_tree_root
-#### extract xbrl data from tree ####
-def recursive_get_fact_and_entry_dict_from_axis_member_dict(node_dict, axis_member_list, date):
-    axis_member_iter_list = axis_member_list[1:]
-    print(axis_member_iter_list)
-    entry_dict = node_dict
-    pp.pprint(node_dict)
-    for index, item in enumerate(axis_member_iter_list):
-        entry_dict = entry_dict.get(item)
-    fact = entry_dict.get(date)
-    return fact, entry_dict
-def recursive_set_axis_member_dict(node_dict, axis, member, axis_member_list, date):
-    if node_dict is None:
-        print(axis)
-        print(member)
-        print(axis_member_list)
-    axis_entry = node_dict.get(axis)
-    if axis_entry is None:
-        node_dict[axis] = {member: {}}
-    member_entry = node_dict[axis].get(member)
-    if member_entry is None:
-        node_dict[axis][member] = {}
-    index = axis_member_list.index(member)
-    if index < len(axis_member_list)-1: # we aren't done with recursion
-        new_dict = node_dict[axis].get(member)
-        print("\n")
-        pp.pprint(node_dict)
-        print(axis_member_list)
-        print("\n")
-        node_dict[axis][member] = recursive_set_axis_member_dict(
-                                        new_dict,
-                                        axis_member_list[index + 1],
-                                        axis_member_list[index + 2],
-                                        axis_member_list,
-                                        date)
-    else:
-        member_entry = node_dict[axis].get(member)
-        if not member_entry:
-            node_dict[axis][member] = {date: None}
-        else:
-            fact = node_dict[axis][member].get(date)
-            if fact is None:
-                node_dict[axis][member] = {date: None}
-            else:
-                print("fact!")
-    print("\n")
-    print(node_dict)
-    return node_dict
+#### extract fact_dict data from tree ####
 def convert_root_node_facts_to_fact_dict(root_node, ticker, folder_name):
     local_prefixes_that_matter = PREFIXES_THAT_MATTER + [ticker.lower()]
-    print(local_prefixes_that_matter)
     dict_to_return = {}
     item_depth = 1
     context_dict = anytree.findall_by_attr(root_node, "context_dict", maxlevel=2)[0].attrib
-    # print(context_dict)
+    #print(context_dict)
     for node in anytree.PreOrderIter(root_node):
         if node.depth == item_depth:
             try:
                 suffix = node.suffix
                 dict_to_return[suffix] = {}
             except:
-                print("failed at suffix")
+                #logging.info("failed at suffix")
                 continue
         try:
             fact = node.fact
         except:
             continue
         if fact == '':
-            #print("no fact")
+            #logging.info("no fact")
             continue
         try:
             context_ref = node.attrib.get("contextRef")
         except Exception as e:
-            print("failed at context_ref")
+            #logging.info("failed at context_ref")
             continue
         if context_ref is None:
-            #print("failed at context_ref is None")
+            #logging.info("failed at context_ref is None")
             continue
         date = context_dict.get(context_ref)
         if not date:
-            print("failed at date")
+            #logging.info("failed at date")
             continue
 
         # check for axis numbers
@@ -1016,8 +974,27 @@ def convert_root_node_facts_to_fact_dict(root_node, ticker, folder_name):
             context_split = context_ref
             for prefix in local_prefixes_that_matter:
                 context_split = context_split.replace(prefix, "")
+
             context_split = context_split.split("_")
             context_split = [x for x in context_split if x != '']
+            #logging.info("here")
+            #logging.info(context_split)
+            failed=False
+            formatted_context_split = []
+            for index, item in enumerate(context_split):
+                if context_split.index(item) == 0:
+                    formatted_context_split.append(item)
+                    continue
+                elif not ("Axis" in item or "Member" in item):
+                    logging.info(item)
+                    previous_item = formatted_context_split[index-1]
+                    formatted_item = "_".join([previous_item, item])
+                    formatted_context_split[index-1] = formatted_item
+                    logging.info("Re-joining Axis-Member item that has '_' character:\n{}".format(formatted_item))
+                else:
+                    formatted_context_split.append(item)
+            context_split = formatted_context_split
+
             recursive_set_axis_member_dict(node_dict,
                                            context_split[1],
                                            context_split[2],
@@ -1029,20 +1006,104 @@ def convert_root_node_facts_to_fact_dict(root_node, ticker, folder_name):
                                            date)
         if previous_entry is not None:
             if previous_entry != fact:
-                print("date: {}".format(date))
-                print("previous entry: {}".format(previous_entry))
-                print("current fact: {}".format(fact))
-                print("failed at previous_entry != node.fact")
-                continue
+                logging.info("date: {}\nprevious entry: {}\ncurrent fact: {}\nfailed at previous_entry != node.fact\nPrevious Entry for: {}|{}|{}|{}".format(date, previous_entry, fact, node.suffix, date, node.fact, previous_entry))
+                node_decimals = node.attrib.get("decimals")
+                existing_decimals = entry_dict.get("{}_attrib".format(date)).get("decimals")
+                logging.info("Check precision: {}|{}".format(node_decimals, existing_decimals))
+                if existing_decimals > node_decimals:
+                    logging.info("Ignoring less precise data.")
+                    continue
+                elif node_decimals > existing_decimals:
+                    logging.info("Replace with fact with better precision.")
+                    entry_dict[date] = fact
+                    entry_dict["{}_attrib".format(date)] = node.attrib
+                else:
+                    raise(Exception("{}|{}".format(node_decimals, existing_decimals)))
             else:
-                raise(Exception("Previous Entry for: {}|{}|{}".format(node.suffix, date, node.fact)))
+                #logging.warning("Duplicate Entry for: {}|{}|{}|{}".format(node.suffix, date, node.fact, previous_entry))
+                pass
         else:
             entry_dict[date] = fact
+            entry_dict["{}_attrib".format(date)] = node.attrib
 
 
     dict_to_return = {ticker: dict_to_return}
     json_filename = "{}_facts_dict.json".format(folder_name)
     write_dict_as_json(dict_to_return, json_filename)
+def recursive_get_fact_and_entry_dict_from_axis_member_dict(node_dict, axis_member_list, date):
+    axis_member_iter_list = axis_member_list[1:]
+    #logging.info(axis_member_iter_list)
+    entry_dict = node_dict
+    #logging.info(node_dict)
+    for index, item in enumerate(axis_member_iter_list):
+        entry_dict = entry_dict.get(item)
+    fact = entry_dict.get(date)
+    return fact, entry_dict
+def recursive_set_axis_member_dict(node_dict, axis, member, axis_member_list, date):
+    if node_dict is None:
+        #logging.info(axis)
+        #logging.info(member)
+        #logging.info(axis_member_list)
+        pass
+    axis_entry = node_dict.get(axis)
+    if axis_entry is None:
+        node_dict[axis] = {member: {}}
+    member_entry = node_dict[axis].get(member)
+    if member_entry is None:
+        node_dict[axis][member] = {}
+    index = axis_member_list.index(member)
+    if index < len(axis_member_list)-1: # we aren't done with recursion
+        new_dict = node_dict[axis].get(member)
+        try:
+            axis_member_list[index + 2]
+            recursion_necessary = True
+        except:
+            logging.error("Axis-Member list has an extra member:")
+            logging.error(axis_member_list)
+            recursion_necessary = False
+
+        if recursion_necessary:
+            node_dict[axis][member] = recursive_set_axis_member_dict(
+                                        new_dict,
+                                        axis_member_list[index + 1],
+                                        axis_member_list[index + 2],
+                                        axis_member_list,
+                                        date)
+    else:
+        member_entry = node_dict[axis].get(member)
+        if not member_entry:
+            node_dict[axis][member] = {date: None}
+        else:
+            fact = node_dict[axis][member].get(date)
+            if fact is None:
+                node_dict[axis][member] = {date: None}
+    return node_dict
+def return_existing_facts_dict(ticker, form_type, date=None):
+    if date:
+        filename = os.path.join("XBRL_Data", ticker.lower(), form_type, "{}-{}_facts_dict.json".format(ticker.lower(), date))
+        if os.path.exits(filename):
+            return import_json(filename)
+    else:
+        return return_most_recent_facts_dict()
+def return_most_recent_facts_dict(ticker, form_type):
+    folder_name = os.path.join("XBRL_Data", ticker.lower(), form_type)
+    most_recent = None
+    if os.path.exists(folder_name):
+        for filename in os.listdir(folder_name):
+            #logging.info(filename)
+            if "_facts_dict.json" in filename:
+                ticker_date = filename.replace("_facts_dict.json", "")
+                #logging.info(ticker_date)
+                date = ticker_date.split("-")[1]
+                date_time_obj = datetime.datetime.strptime(date, "%Y%m%d")
+                if most_recent is None:
+                    most_recent = (date_time_obj, filename)
+                else:
+                    if date_time_obj > most_recent[0]:
+                        most_recent = (date_time_obj, filename)
+    file_path = os.path.join("XBRL_Data", ticker.lower(), form_type, most_recent[1])
+    return import_json(file_path)
+#### extract xbrl data from tree ####
 def get_data_node(root_node, attribute_name, date=None, subcategory=None):
     if date is not None:
         context_dict = anytree.findall_by_attr(root_node, "context_dict", maxlevel=2)[0].attrib
@@ -1483,7 +1544,7 @@ testing_write_file = False
 force_download = False
 testing = False
 if __name__ == "__main__":
-    testing = False
+    testing = True
     if testing:
         randomize = False
         date_specific = False
@@ -1491,7 +1552,7 @@ if __name__ == "__main__":
         testing_write_file = True
         force_download = False
         stock_ticker = 'aapl'
-        form = '10-K'
+        form = '10-Q'
 
         appl = ('aapl', 320193, 2018, 9, 29)
         ge = ('ge', 40545, 2018, 12, 31)
@@ -1520,6 +1581,8 @@ if __name__ == "__main__":
 
         stock = stocks[0]
         xbrl_tree_root = main_download_and_convert(stock[0], stock[1], form_type, delete_files_after_import=delete_after_import, force_download=force_download)
+        #my_dict = return_most_recent_facts_dict(stock[0], form)
+        #print(my_dict)
         #logging.info(get_most_recent_data(apple_root, "LongTermDebtNoncurrent", "Q"))
 
         #print("EntityCommonStockSharesOutstanding")
