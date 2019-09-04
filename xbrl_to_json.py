@@ -942,20 +942,51 @@ def convert_root_node_facts_to_fact_dict(root_node, ticker, folder_name):
             fact = node.fact
         except:
             continue
-        if fact == '':
+        if fact in ['', None]:
             #logging.info("no fact")
             continue
         try:
             context_ref = node.attrib.get("contextRef")
         except Exception as e:
-            #logging.info("failed at context_ref")
+            logging.info("failed at context_ref")
+            logging.info(fact)
             continue
         if context_ref is None:
+            # no date, cannot use set with json, so use list
+            # if label, make label dict
+            node_dict = dict_to_return.get(node.suffix)
+            if node_dict is None:
+                dict_to_return[node.suffix] = {}
+                node_dict = dict_to_return.get(node.suffix)
+
+            label_ref = node.attrib.get('{http://www.w3.org/1999/xlink}label')
+            label_role = node.attrib.get('{http://www.w3.org/1999/xlink}role')
+            if label_ref and label_role:
+                label_role_short = label_role.replace("http://www.xbrl.org/2003/role/", "")
+
+                label_dict = node_dict.get(label_ref)
+                if not label_dict:
+                    node_dict[label_ref] = {label_role_short: fact}
+                else:
+                    node_dict[label_ref][label_role_short] = fact
+            else: #not label
+                dict_list = node_dict.get('list')
+                if dict_list is None:
+                    node_dict['list'] = [fact]
+                else:
+                    if fact not in dict_list:
+                        #print(dict_list)
+                        #print(fact)
+                        dict_list.append(fact)
+                        dict_list.sort()
             #logging.info("failed at context_ref is None")
+            #logging.info(fact)
             continue
         date = context_dict.get(context_ref)
         if not date:
-            #logging.info("failed at date")
+            print(node)
+            logging.info("failed at date, what is fact?")
+            quit()
             continue
 
         # check for axis numbers
@@ -967,43 +998,47 @@ def convert_root_node_facts_to_fact_dict(root_node, ticker, folder_name):
         node_dict = dict_to_return.get(node.suffix)
         if not node_dict:
             node_dict = {}
-        if not axis:
-            previous_entry = dict_to_return[node.suffix].get(date)
-            entry_dict = dict_to_return.get(node.suffix)
-        else: # we need a complicated axis-member relationship (similar date, but subcatigory)
-            context_split = context_ref
-            for prefix in local_prefixes_that_matter:
-                context_split = context_split.replace(prefix, "")
 
-            context_split = context_split.split("_")
+        if axis: # we need a complicated axis-member relationship (similar date, but subcatigory)
+            # our context_ref here will have all the parts listed
+            for prefix in local_prefixes_that_matter:
+                context_ref = context_ref.replace("_{}".format(prefix), "")
+
+            context_split = context_ref.split("_")
             context_split = [x for x in context_split if x != '']
             #logging.info("here")
-            #logging.info(context_split)
+            #logging.info("{}:{} = {}".format(node.suffix, context_split, fact))
             failed=False
             formatted_context_split = []
             for index, item in enumerate(context_split):
                 if context_split.index(item) == 0:
+                    # here we skip the first contextref bit because it's just the date
                     formatted_context_split.append(item)
                     continue
                 elif not ("Axis" in item or "Member" in item):
-                    logging.info(item)
+                    # this is for the occational context ref that includes an underscore, it will reattach to previous bit
+                    #logging.info(item)
                     previous_item = formatted_context_split[index-1]
                     formatted_item = "_".join([previous_item, item])
                     formatted_context_split[index-1] = formatted_item
-                    logging.info("Re-joining Axis-Member item that has '_' character:\n{}".format(formatted_item))
+                    #logging.info("Re-joining Axis-Member item that has '_' character:\n{}".format(formatted_item))
                 else:
                     formatted_context_split.append(item)
             context_split = formatted_context_split
 
-            recursive_set_axis_member_dict(node_dict,
+            #something is broken here, not getting all dates and facts for members
+
+            node_dict = recursive_set_axis_member_dict(node_dict,
                                            context_split[1],
                                            context_split[2],
                                            context_split,
-                                           date)
-            previous_entry, entry_dict = recursive_get_fact_and_entry_dict_from_axis_member_dict(
-                                           node_dict,
-                                           context_split,
-                                           date)
+                                           date,
+                                           fact)
+            continue
+
+
+        previous_entry = dict_to_return[node.suffix].get(date)
+        entry_dict = dict_to_return.get(node.suffix)
         if previous_entry is not None:
             if previous_entry != fact:
                 logging.info("date: {}\nprevious entry: {}\ncurrent fact: {}\nfailed at previous_entry != node.fact\nPrevious Entry for: {}|{}|{}|{}".format(date, previous_entry, fact, node.suffix, date, node.fact, previous_entry))
@@ -1022,28 +1057,34 @@ def convert_root_node_facts_to_fact_dict(root_node, ticker, folder_name):
             else:
                 #logging.warning("Duplicate Entry for: {}|{}|{}|{}".format(node.suffix, date, node.fact, previous_entry))
                 pass
-        else:
+        else: # previous entry is none
             entry_dict[date] = fact
             entry_dict["{}_attrib".format(date)] = node.attrib
+
+    # sort labels
+    label_dict = dict_to_return.get("label")
+    # here i'm going to look at the labels dict,
+    # then i'm going to look through the suffixes
+    # if the suffix matches the label id str, add the labels to that dict
+    for id_str, labels_to_move in label_dict.items():
+        for suffix_str, suffix_dict in dict_to_return.items():
+            if "_{}_".format(suffix_str) in id_str: # like "_Taxes_" in "lab_us-gaap_Taxes_IDCHARSBLAHBLAH"
+                suffix_dict["label"] = labels_to_move
+                break
+    # remove big label dict
+    dict_to_return.pop("label", None)
 
 
     dict_to_return = {ticker: dict_to_return}
     json_filename = "{}_facts_dict.json".format(folder_name)
     write_dict_as_json(dict_to_return, json_filename)
-def recursive_get_fact_and_entry_dict_from_axis_member_dict(node_dict, axis_member_list, date):
-    axis_member_iter_list = axis_member_list[1:]
-    #logging.info(axis_member_iter_list)
-    entry_dict = node_dict
-    #logging.info(node_dict)
-    for index, item in enumerate(axis_member_iter_list):
-        entry_dict = entry_dict.get(item)
-    fact = entry_dict.get(date)
-    return fact, entry_dict
-def recursive_set_axis_member_dict(node_dict, axis, member, axis_member_list, date):
+
+def recursive_set_axis_member_dict(node_dict, axis, member, axis_member_list, date, fact, member_index=2):
     if node_dict is None:
-        #logging.info(axis)
-        #logging.info(member)
-        #logging.info(axis_member_list)
+        ## this just means it's a new axis member dict
+        logging.info(axis)
+        logging.info(member)
+        logging.info(axis_member_list)
         pass
     axis_entry = node_dict.get(axis)
     if axis_entry is None:
@@ -1051,32 +1092,38 @@ def recursive_set_axis_member_dict(node_dict, axis, member, axis_member_list, da
     member_entry = node_dict[axis].get(member)
     if member_entry is None:
         node_dict[axis][member] = {}
-    index = axis_member_list.index(member)
-    if index < len(axis_member_list)-1: # we aren't done with recursion
-        new_dict = node_dict[axis].get(member)
+    if member_index < len(axis_member_list)-1: # we aren't done with recursion
+        member_dict = node_dict[axis].get(member)
         try:
-            axis_member_list[index + 2]
+            axis_member_list[member_index + 2]
             recursion_necessary = True
         except:
             logging.error("Axis-Member list has an extra member:")
             logging.error(axis_member_list)
             recursion_necessary = False
+            quit()
 
         if recursion_necessary:
             node_dict[axis][member] = recursive_set_axis_member_dict(
-                                        new_dict,
-                                        axis_member_list[index + 1],
-                                        axis_member_list[index + 2],
+                                        member_dict,
+                                        axis_member_list[member_index + 1],
+                                        axis_member_list[member_index + 2],
                                         axis_member_list,
-                                        date)
+                                        date,
+                                        fact,
+                                        member_index = member_index + 2)
     else:
         member_entry = node_dict[axis].get(member)
         if not member_entry:
-            node_dict[axis][member] = {date: None}
+            node_dict[axis][member] = {date: fact}
         else:
-            fact = node_dict[axis][member].get(date)
-            if fact is None:
-                node_dict[axis][member] = {date: None}
+            previous_fact = node_dict.get(axis).get(member).get(date)
+            if previous_fact is not None:
+                if previous_fact != fact:
+                    pp.pprint("##### {}:{} = {} vs {}".format(axis, member, previous_fact, fact))
+                    pp.pprint(node_dict.get(axis).get(member))
+                    quit()
+            node_dict[axis][member][date] = fact
     return node_dict
 def return_existing_facts_dict(ticker, form_type, date=None):
     if date:
