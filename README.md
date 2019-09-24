@@ -5,6 +5,8 @@ to run at the current iteration, you'll need the ticker and the CIK, and form ty
 
 xbrl_to_json.main_download_and_convert(ticker, cik, form_type)
 
+Current functional form types include: 10-Q, 10-K, 20-F, 40-F
+
 I used the anytree node module because it deals with a lot of the inherent problems between markup xbrl and key,value json.
 
 Finally, the program outputs a json file of the facts.
