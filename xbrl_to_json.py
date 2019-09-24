@@ -10,10 +10,20 @@ clarks_to_ignore = ['http://www.w3.org/2001/XMLSchema',
                     'http://www.xbrl.org/2003/linkbase',
                     'http://xbrl.org/2006/xbrldi',
                     ]
+unit_ref_list = []
 MONTH_IN_SECONDS = 60.0 * 60 * 24 * 7 * 30
-PREFIXES_THAT_MATTER = ["us-gaap", "dei", "srt", "country"]
+ANNUAL_FORM_TYPES = ["10-K", "20-F", "40-F"]
+PREFIXES_THAT_MATTER = ["us-gaap", "dei", "srt", "country", "stpr", "custom"]
+US_COUNTRY_CODES = ["AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "HI", "ID", "IL",
+                    "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE",
+                    "NV", "NH", "NJ","NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD",
+                    "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "X1", ]
+CANADA_COUNTRY_CODES = ["A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "B0", "Z4",]
 
-def main_xbrl_to_json_converter(ticker, cik, date, folder_path, delete_files_after_import=False):
+
+
+
+def main_xbrl_to_json_converter(ticker, cik, date, folder_path, sic=None, country_code=None, delete_files_after_import=False):
     root_node_dict = {}
     potential_json_filename = return_xbrl_to_json_converted_filename_with_date(folder_path, ticker, date)
     # logging.info(potential_json_filename)
@@ -38,7 +48,7 @@ def main_xbrl_to_json_converter(ticker, cik, date, folder_path, delete_files_aft
                 logging.info("done")
                 root_node_dict[filename] = root_node
         ''' here we build up the whole tree '''
-        fact_tree_root = fact_centric_xbrl_processor(root_node_dict, ticker)
+        fact_tree_root = fact_centric_xbrl_processor(root_node_dict, ticker, sic, country_code)
         write_txt_file = not delete_files_after_import # if we're deleting files, lets not save a render.txt file
         ''' here get the root of the whole tree '''
         root_node = xbrl_to_json_processor(potential_json_filename, ticker, root_node=fact_tree_root, write_file=True, write_txt_file=write_txt_file)
@@ -141,7 +151,7 @@ def return_refernce_node(node, fact_tree_root, other_tree_root, ticker):
                                      parent=other_tree_root,
                                      suffix=node.suffix)
         return xbrli_node
-def fact_centric_xbrl_processor(root_node_dict, ticker, sort_trash_for_debugging=False):
+def fact_centric_xbrl_processor(root_node_dict, ticker, sic, country_code, sort_trash_for_debugging=False):
     fact_tree_root = anytree.Node(ticker)
     other_tree_root = anytree.Node('xbrli')
     trash_tree_root = anytree.Node('unsorted_trash')
@@ -174,7 +184,7 @@ def fact_centric_xbrl_processor(root_node_dict, ticker, sort_trash_for_debugging
                 suffix = node.suffix
             except:
                 logging.error("there is a problem with this node... it has no 'suffix' attribute")
-                #pp.pprint(vars(node))
+                #logging.info(pp.pformat(vars(node)))
                 sys.exit()
 
             ''' we create a refernce node if it doesn't exist,
@@ -245,7 +255,7 @@ def fact_centric_xbrl_processor(root_node_dict, ticker, sort_trash_for_debugging
 
     logging.info("Create context refs dict:")
     start_time = time.time()
-    convert_context_refs_into_id_keyed_dict(fact_tree_root, other_tree_root, trash_tree_root)
+    convert_context_refs_into_id_keyed_dict(fact_tree_root, other_tree_root, trash_tree_root, sic, country_code)
     logging.info("Finished in {}sec".format(round(time.time() - start_time)))
 
 
@@ -269,7 +279,8 @@ def fact_centric_xbrl_processor(root_node_dict, ticker, sort_trash_for_debugging
     logging.info("Finished in {}sec".format(round(time.time() - start_time)))
 
     return fact_tree_root
-def convert_context_refs_into_id_keyed_dict(fact_tree_root, other_tree_root, trash_tree_root):
+def convert_context_refs_into_id_keyed_dict(fact_tree_root, other_tree_root, trash_tree_root, sic, country_code):
+    'converts contexts refs into a dict, and adds country code and sic'
     context_node = None
     period_node_list = []
     for child in list(other_tree_root.children):
@@ -302,6 +313,8 @@ def convert_context_refs_into_id_keyed_dict(fact_tree_root, other_tree_root, tra
     for node in anytree.PreOrderIter(context_node):
         node.parent = trash_tree_root
     context_dict_node = anytree.Node("context_dict", parent=fact_tree_root, attrib = context_dict)
+    context_sic_node = anytree.Node("sic", parent=fact_tree_root, attrib = sic)
+    context_country_code_node = anytree.Node("country_code", parent=fact_tree_root, attrib = country_code)
 def keep_trash_sorted(trash_tree_root):
     sorted_trash_tree_root = anytree.Node('trash')
     for node in anytree.PreOrderIter(trash_tree_root):
@@ -444,9 +457,9 @@ def return_new_parent_for_Axis_contextRefs(node):
     split_contextRef = contextRef.split("_")
     if len(split_contextRef) == 1:
         return
-    if "Axis" in contextRef:
+    if "Axis" in contextRef or "Member" in contextRef:
         for index, sub_string in enumerate(split_contextRef):
-            if sub_string.endswith("Axis"):
+            if sub_string.endswith("Axis") or sub_string.endswith("Member"):
                 parent = node.parent
 
                 for child in parent.children:
@@ -686,6 +699,51 @@ def write_dict_as_json(dict_to_write, json_filename):
     logging.info("writing: {}".format(json_filename))
     with open(json_filename, 'w') as outfile:
         json.dump(dict_to_write, outfile, indent=2)
+def form_type_conversion(form_type, country_code, us_codes=US_COUNTRY_CODES, ca_codes=CANADA_COUNTRY_CODES):
+    logging.info(country_code)
+    if form_type == "10-Q":
+        if country_code not in us_codes:
+            return None
+    elif form_type in ANNUAL_FORM_TYPES:
+        if country_code in us_codes:
+            return "10-K"
+        elif country_code in ca_codes:
+            return "40-F"
+        else:
+            return "20-F"
+    else:
+        return None
+def folder_path_form_type_conversion(ticker, form_type):
+    make_folder = False
+    folder_path = return_xbrl_data_formatted_folder_path(ticker, form_type)
+    if not does_file_exist_in_dir(folder_path):
+        if form_type in ANNUAL_FORM_TYPES:
+            us_path = return_xbrl_data_formatted_folder_path(ticker, "10-K")
+            ca_path = return_xbrl_data_formatted_folder_path(ticker, "40-F")
+            adr_path = return_xbrl_data_formatted_folder_path(ticker, "20-F")
+            if does_file_exist_in_dir(us_path):
+                form_type = '10-K'
+                folder_path = us_path
+                #logging.info("US company path generated")
+            elif does_file_exist_in_dir(ca_path):
+                form_type = '40-F'
+                folder_path = ca_path
+                #logging.info("Canadian company path generated")
+            elif does_file_exist_in_dir(adr_path):
+                form_type = '20-F'
+                folder_path = adr_path
+                #logging.info("International company path generated")
+            else:
+                make_folder = True
+        else:
+            make_folder = True
+    return folder_path, form_type, make_folder
+def does_file_exist_in_dir(path):
+    'is there a file in this path'
+    try:
+        return any(os.path.isfile(os.path.join(path, i)) for i in os.listdir(path))
+    except:
+        return None
 #### xbrl from sec ####
 def return_url_request_data(url, values_dict={}, secure=False, sleep=1):
     time.sleep(sleep)
@@ -717,14 +775,62 @@ def sec_xbrl_single_stock(cik, form_type):
                 }
     response_data = return_url_request_data(base_url, values, secure=True)
     return response_data
-def parse_sec_results_page(sec_response_data, date="most recent", previous_error=False):
+def parse_sec_results_page(sec_response_data, cik, form_type, date="most recent", previous_error=False):
     soup = bs4.BeautifulSoup(sec_response_data, 'html.parser')
+    if form_type == "10-K":
+        ten_k_soup = soup
+    #logging.info(soup.prettify())
+
+    identInfo = soup.find_all("p", class_="identInfo")[0]
+    linked_data = identInfo.find_all("a")
+    previous_item = None
+    sic = None
+    country_code = None
+    for item in linked_data:
+        # e.g.
+        # /cgi-bin/browse-edgar?action=getcompany&SIC=7370&owner=exclude&count=40
+        # /cgi-bin/browse-edgar?action=getcompany&State=F4&owner=exclude&count=40
+        href = item.get("href")
+        if "&SIC=" in href:
+            sic = item.text
+        elif "&State=" in href:
+            country_code = item.text
+            new_form_type = form_type_conversion(form_type, country_code)
+            if new_form_type != form_type:
+                logging.info("{} vs {}".format(new_form_type, form_type))
+                form_type = new_form_type
+                logging.info("-"*2000)
+                logging.info(form_type)
+                new_response_data = sec_xbrl_single_stock(cik, form_type)
+                soup = bs4.BeautifulSoup(new_response_data, 'html.parser')
+
+    if not sic and country_code:
+        raise(Exception)
+
     table_list = soup.find_all("table", {"summary": "Results"})
     #logging.info(len(table_list))
     if not len(table_list) == 1:
         logging.error("something's up here")
     table = table_list[0]
+    logging.info(table)
     document_button_list = table.find_all("a", {"id":"documentsbutton"})
+    logging.info(document_button_list)
+    if not document_button_list:
+        if form_type not in ["10-K", "10-Q"]:
+            logging.warning("something else is up here")
+            soup = ten_k_soup
+            table_list = soup.find_all("table", {"summary": "Results"})
+            #logging.info(len(table_list))
+            if not len(table_list) == 1:
+                logging.error("something's up here")
+            table = table_list[0]
+            logging.info(table)
+            document_button_list = table.find_all("a", {"id":"documentsbutton"})
+            logging.info(document_button_list)
+            if document_button_list:
+                form_type = "10-K"
+
+
     if not date:
         date = "most recent"
     if date == "most recent":
@@ -765,10 +871,11 @@ def parse_sec_results_page(sec_response_data, date="most recent", previous_error
                         break
         relevant_td_parent = relevant_td.parent
         relevant_a_tag = relevant_td_parent.find("a", {"id":"documentsbutton"})
+    logging.info(relevant_a_tag)
     relevant_a_href = relevant_a_tag['href']
     sec_url = "https://www.sec.gov"
     relevant_xbrl_url = sec_url + relevant_a_href
-    return relevant_xbrl_url
+    return relevant_xbrl_url, sic, country_code, form_type
 def write_xbrl_file(file_name, sec_response_data):
     with open(file_name, 'w') as outfile:
         outfile.write(sec_response_data)
@@ -806,7 +913,7 @@ def get_xbrl_files_and_return_folder_name(ticker, xbrl_data_page_response_data, 
     table_list = soup.find_all("table", {"summary": "Data Files"})
     if not len(table_list) == 1:
         logging.error("something's up here")
-        #pp.pprint(table_list)
+        #logging.info(pp.pformat(table_list))
         if not table_list:
             logging.error("Likely refering to a sec page without XBRL, manually check the url")
             logging.error(url_in_case_of_error)
@@ -822,7 +929,12 @@ def get_xbrl_files_and_return_folder_name(ticker, xbrl_data_page_response_data, 
         if not folder_name:
             if "_" not in file_name:
                 folder_name = file_name.split(".")[0]
-                data_date = folder_name.split("-")[1]
+            else:
+                # grmn-20181229_def.xml
+                folder_name = file_name.split("_")[0]
+            data_date = folder_name.split("-")[1]
+
+        # logging.info(ticker, form_type, folder_name, file_name)
         full_file_name = os.path.join("XBRL_Data", ticker, form_type, folder_name, file_name)
         full_folders_name = os.path.join("XBRL_Data", ticker, form_type, folder_name)
         if not os.path.exists(full_folders_name):
@@ -838,11 +950,11 @@ def get_xbrl_files_and_return_folder_name(ticker, xbrl_data_page_response_data, 
 def full_sec_xbrl_folder_download(ticker, cik, form_type, date="most recent", previous_error=False):
     response_data = sec_xbrl_single_stock(cik, form_type)
     logging.info("sec response_data gathered")
-    relevant_xbrl_url = parse_sec_results_page(response_data, date=date, previous_error=previous_error)
+    relevant_xbrl_url, sic, country_code, form_type = parse_sec_results_page(response_data, cik, form_type, date=date, previous_error=previous_error)
     logging.info("precise url found")
     xbrl_data_page_response_data = return_url_request_data(relevant_xbrl_url)
     logging.info("xbrl data downloaded")
-    folder_name = get_xbrl_files_and_return_folder_name(ticker, xbrl_data_page_response_data, form_type, url_in_case_of_error=relevant_xbrl_url)
+    folder_name, data_date = get_xbrl_files_and_return_folder_name(ticker, xbrl_data_page_response_data, form_type, url_in_case_of_error=relevant_xbrl_url)
     if folder_name == "Error: No Table":
         if not previous_error:
             return full_sec_xbrl_folder_download(ticker, cik, form_type, date=date, previous_error=True)
@@ -850,7 +962,7 @@ def full_sec_xbrl_folder_download(ticker, cik, form_type, date="most recent", pr
             logging.error("error loop here")
             return
     logging.info("xbrl files created")
-    return folder_name
+    return folder_name, data_date, sic, country_code, form_type
 #### main ####
 def main_download_and_convert(ticker, cik, form_type, year=None, month=None, day=None, force_download=False, delete_files_after_import=False):
     given_date = None
@@ -864,9 +976,12 @@ def main_download_and_convert(ticker, cik, form_type, year=None, month=None, day
             logging.error("invalid year/month/date input")
     # start by converting to path name
     folder_path = return_xbrl_data_formatted_folder_path(ticker, form_type)
-    logging.info(folder_path)
-    if not os.path.exists(folder_path):
-        os.makedirs(folder_path)
+    #logging.info(folder_path)
+    if not does_file_exist_in_dir(folder_path):
+        folder_path, form_type, make_folder = folder_path_form_type_conversion(ticker, form_type)
+        if make_folder:
+            os.makedirs(folder_path, exist_ok=True)
+    #logging.info(folder_path)
     # if we are going to force a download attempt, the following can all be skipped
     if not force_download:
         # if we have a specific date we're looking for, this will do that
@@ -904,12 +1019,12 @@ def main_download_and_convert(ticker, cik, form_type, year=None, month=None, day
                                 folder_ymd_tuple = (ticker_hyphen_date, str(most_recent_folder_date)[:4], str(most_recent_folder_date)[4:6], str(most_recent_folder_date)[6:])
             if folder_ymd_tuple:
                 #logging.info("one line below")
-                #pp.pprint(folder_ymd_tuple)
+                #logging.info(pp.pformat(folder_ymd_tuple))
                 most_recent_folder_time = time.strptime("{}:{}:{}".format(folder_ymd_tuple[1], folder_ymd_tuple[2], folder_ymd_tuple[3]), "%Y:%m:%d")
                 most_recent_folder_time = time.mktime(most_recent_folder_time)
                 now = float(time.time())
                 period_seconds = 0
-                if form_type == "10-K":
+                if form_type in ANNUAL_FORM_TYPES:
                     period_seconds = MONTH_IN_SECONDS * 12
                 elif form_type == "10-Q":
                     period_seconds = MONTH_IN_SECONDS * 3
@@ -918,9 +1033,14 @@ def main_download_and_convert(ticker, cik, form_type, year=None, month=None, day
                     xbrl_tree_root = main_xbrl_to_json_converter(ticker, cik, most_recent_folder_date, full_path, delete_files_after_import=delete_files_after_import)
                     if not os.path.exists("{}_facts_dict.json".format(full_path)):
                         convert_root_node_facts_to_fact_dict(xbrl_tree_root, ticker, full_path)
+
+                    #logging.warning("remove this redundancy")
+                    #convert_root_node_facts_to_fact_dict(xbrl_tree_root, ticker, full_path)
+
                     return xbrl_tree_root
-    folder_name, data_date = full_sec_xbrl_folder_download(ticker, cik, form_type, date=given_date)
-    xbrl_tree_root = main_xbrl_to_json_converter(ticker, cik, data_date, folder_name, delete_files_after_import=delete_files_after_import)
+    folder_name, data_date, sic, country_code, form_type = full_sec_xbrl_folder_download(ticker, cik, form_type, date=given_date)
+    xbrl_tree_root = main_xbrl_to_json_converter(ticker, cik, data_date, folder_name, sic, country_code, delete_files_after_import=delete_files_after_import)
+    logging.info(folder_name)
     convert_root_node_facts_to_fact_dict(xbrl_tree_root, ticker, folder_name)
     return xbrl_tree_root
 #### extract fact_dict data from tree ####
@@ -984,10 +1104,18 @@ def convert_root_node_facts_to_fact_dict(root_node, ticker, folder_name):
             continue
         date = context_dict.get(context_ref)
         if not date:
-            print(node)
+            logging.warning(node)
             logging.info("failed at date, what is fact?")
-            quit()
             continue
+        unit_ref = node.attrib.get("unitRef")
+        if unit_ref:
+            if "iso4217" in unit_ref:
+                for usd in ["usd", "USD"]:
+                    if usd not in unit_ref:
+                        date = "{}_{}".format(date, unit_ref)
+
+            if unit_ref not in unit_ref_list:
+                unit_ref_list.append(unit_ref)
 
         # check for axis numbers
         try:
@@ -999,61 +1127,92 @@ def convert_root_node_facts_to_fact_dict(root_node, ticker, folder_name):
         if not node_dict:
             node_dict = {}
 
+        #logging.info("Axis = {}".format(axis))
         if axis: # we need a complicated axis-member relationship (similar date, but subcatigory)
             # our context_ref here will have all the parts listed
             for prefix in local_prefixes_that_matter:
                 context_ref = context_ref.replace("_{}".format(prefix), "")
 
             context_split = context_ref.split("_")
+            #logging.info(context_split)
             context_split = [x for x in context_split if x != '']
-            #logging.info("here")
+            #logging.info(context_split)
+
+
             #logging.info("{}:{} = {}".format(node.suffix, context_split, fact))
             failed=False
+            #logging.info(context_split)
             formatted_context_split = []
             for index, item in enumerate(context_split):
-                if context_split.index(item) == 0:
+
+                #logging.info(index, item)
+                if index == 0:
                     # here we skip the first contextref bit because it's just the date
                     formatted_context_split.append(item)
                     continue
-                elif not ("Axis" in item or "Member" in item):
-                    # this is for the occational context ref that includes an underscore, it will reattach to previous bit
-                    #logging.info(item)
-                    previous_item = formatted_context_split[index-1]
-                    formatted_item = "_".join([previous_item, item])
-                    formatted_context_split[index-1] = formatted_item
-                    #logging.info("Re-joining Axis-Member item that has '_' character:\n{}".format(formatted_item))
-                else:
-                    formatted_context_split.append(item)
+
+                formatted_context_split.append(item)
+
             context_split = formatted_context_split
-
-            #something is broken here, not getting all dates and facts for members
-
-            node_dict = recursive_set_axis_member_dict(node_dict,
-                                           context_split[1],
-                                           context_split[2],
-                                           context_split,
-                                           date,
-                                           fact)
-            continue
+            #logging.info(context_split)
+            if len(context_split) == 1:
+                pass
+            else:
+                #something is broken here, not getting all dates and facts for members
+                #logging.info(context_split)
+                node_dict = recursive_set_axis_member_dict(node,
+                                                            node_dict,
+                                                            context_split[1],
+                                                            context_split,
+                                                            date,
+                                                            fact,)
+                continue
 
 
         previous_entry = dict_to_return[node.suffix].get(date)
         entry_dict = dict_to_return.get(node.suffix)
         if previous_entry is not None:
             if previous_entry != fact:
-                logging.info("date: {}\nprevious entry: {}\ncurrent fact: {}\nfailed at previous_entry != node.fact\nPrevious Entry for: {}|{}|{}|{}".format(date, previous_entry, fact, node.suffix, date, node.fact, previous_entry))
+                #logging.info("date: {}\nprevious entry: {}\ncurrent fact: {}\nfailed at previous_entry != node.fact\nPrevious Entry for: {}|{}|{}|{}".format(date, previous_entry, fact, node.suffix, date, node.fact, previous_entry))
                 node_decimals = node.attrib.get("decimals")
-                existing_decimals = entry_dict.get("{}_attrib".format(date)).get("decimals")
-                logging.info("Check precision: {}|{}".format(node_decimals, existing_decimals))
-                if existing_decimals > node_decimals:
-                    logging.info("Ignoring less precise data.")
-                    continue
-                elif node_decimals > existing_decimals:
-                    logging.info("Replace with fact with better precision.")
-                    entry_dict[date] = fact
-                    entry_dict["{}_attrib".format(date)] = node.attrib
+                existing_attrib = entry_dict.get("{}_attrib".format(date))
+                existing_decimals = existing_attrib.get("decimals")
+                #logging.info("Check precision: {}|{}".format(node_decimals, existing_decimals))
+                if existing_decimals and node_decimals:
+                    if existing_decimals > node_decimals:
+                        #logging.info("Ignoring less precise data.")
+                        continue
+                    elif node_decimals > existing_decimals:
+                        #logging.info("Replace with fact with better precision.")
+                        entry_dict[date] = fact
+                        entry_dict["{}_attrib".format(date)] = node.attrib
+                    elif node_decimals == existing_decimals:
+                        #logging.info("Same decimals: taking longer str")
+                        if len(fact) > len(entry_dict.get(date)):
+                            entry_dict[date] = fact
+                            entry_dict["{}_attrib".format(date)] = node.attrib
+                    else:
+                        raise(Exception("{}|{}".format(node_decimals, existing_decimals)))
                 else:
-                    raise(Exception("{}|{}".format(node_decimals, existing_decimals)))
+                    #logging.info("weird data to list")
+                    #logging.info("\n")
+                    #logging.info("-"*50)
+                    #logging.info(pp.pformat(previous_entry))
+                    #logging.info("-"*50)
+                    #logging.info(pp.pformat(fact))
+                    #logging.info("-"*50)
+                    #logging.info(pp.pformat(entry_dict))
+                    #logging.info("-"*50)
+                    #logging.info(pp.pformat(node_dict))
+                    #logging.info("-"*50)
+                    #logging.info(pp.pformat(existing_attrib))
+                    #logging.info(pp.pformat(node.attrib))
+                    #logging.info("\n")
+                    if isinstance(previous_entry, list):
+                        previous_entry.append(fact)
+                    else:
+                        entry_dict[date] = [previous_entry, fact]
+
             else:
                 #logging.warning("Duplicate Entry for: {}|{}|{}|{}".format(node.suffix, date, node.fact, previous_entry))
                 pass
@@ -1079,51 +1238,73 @@ def convert_root_node_facts_to_fact_dict(root_node, ticker, folder_name):
     json_filename = "{}_facts_dict.json".format(folder_name)
     write_dict_as_json(dict_to_return, json_filename)
 
-def recursive_set_axis_member_dict(node_dict, axis, member, axis_member_list, date, fact, member_index=2):
+def recursive_set_axis_member_dict(node, node_dict, axis_or_member, axis_member_list, date, fact, axis_or_member_index=1):
     if node_dict is None:
         ## this just means it's a new axis member dict
-        logging.info(axis)
-        logging.info(member)
-        logging.info(axis_member_list)
+        #logging.info(axis_or_member)
+        #logging.info(axis_member_list)
         pass
-    axis_entry = node_dict.get(axis)
-    if axis_entry is None:
-        node_dict[axis] = {member: {}}
-    member_entry = node_dict[axis].get(member)
-    if member_entry is None:
-        node_dict[axis][member] = {}
-    if member_index < len(axis_member_list)-1: # we aren't done with recursion
-        member_dict = node_dict[axis].get(member)
-        try:
-            axis_member_list[member_index + 2]
-            recursion_necessary = True
-        except:
-            logging.error("Axis-Member list has an extra member:")
-            logging.error(axis_member_list)
-            recursion_necessary = False
-            quit()
-
-        if recursion_necessary:
-            node_dict[axis][member] = recursive_set_axis_member_dict(
-                                        member_dict,
-                                        axis_member_list[member_index + 1],
-                                        axis_member_list[member_index + 2],
+    axis_or_member_entry = node_dict.get(axis_or_member)
+    if axis_or_member_entry is None:
+        node_dict[axis_or_member] = {}
+    #logging.info(axis_or_member_index, axis_member_list)
+    if axis_or_member_index < len(axis_member_list)-1: # we aren't done with recursion
+        axis_or_member_dict = node_dict.get(axis_or_member)
+        node_dict[axis_or_member] = recursive_set_axis_member_dict(
+                                        node,
+                                        axis_or_member_dict,
+                                        axis_member_list[axis_or_member_index + 1],
                                         axis_member_list,
                                         date,
                                         fact,
-                                        member_index = member_index + 2)
+                                        axis_or_member_index = axis_or_member_index + 1)
     else:
-        member_entry = node_dict[axis].get(member)
-        if not member_entry:
-            node_dict[axis][member] = {date: fact}
+        axis_or_member_entry = node_dict.get(axis_or_member)
+        attrib = node.attrib
+        if not axis_or_member_entry:
+            node_dict[axis_or_member] = {date: fact, "{}_attrib".format(date): attrib}
         else:
-            previous_fact = node_dict.get(axis).get(member).get(date)
+            previous_fact = node_dict.get(axis_or_member).get(date)
             if previous_fact is not None:
                 if previous_fact != fact:
-                    pp.pprint("##### {}:{} = {} vs {}".format(axis, member, previous_fact, fact))
-                    pp.pprint(node_dict.get(axis).get(member))
-                    quit()
-            node_dict[axis][member][date] = fact
+                    #logging.info("fact: {}".format(fact))
+                    #logging.info("existing: {}".format(previous_fact))
+                    #logging.info("node_dict.get(axis_or_member):")
+                    #logging.info(pp.pformat(node_dict.get(axis_or_member)))
+                    #logging.info("not get the date_attrib")
+                    #logging.info(pp.pformat(node_dict.get(axis_or_member).get("{}_attrib".format(date))))
+                    node_decimals = node.attrib.get("decimals")
+
+
+                    previous_attrib = node_dict.get(axis_or_member).get("{}_attrib".format(date))
+                    existing_decimals = previous_attrib.get("decimals")
+
+                    #logging.info("Check precision: {}|{}".format(node_decimals, existing_decimals))
+                    if existing_decimals > node_decimals:
+                        'ignore this'
+                        #logging.info("Ignoring less precise data.")
+                    elif node_decimals > existing_decimals:
+                        #logging.info("Replace with fact with better precision.")
+                        node_dict[date] = fact
+                        node_dict["{}_attrib".format(date)] = node.attrib
+                    elif node_decimals == existing_decimals:
+                        #logging.info("Same decimals: taking longer str")
+                        #logging.info(fact)
+                        #logging.info(node_dict)
+                        #logging.info(date)
+                        #logging.info(node_dict.get(axis_or_member))
+                        #logging.info(type(node_dict.get(date)))
+                        if len(fact) > len(previous_fact):
+                            node_dict[date] = fact
+                            node_dict["{}_attrib".format(date)] = node.attrib
+                    else:
+                        logging.info("##### {} = {} vs {}".format(axis_or_member, previous_fact, fact))
+                        logging.info(node_dict.get(axis_or_member))
+                        raise(Exception("{}|{}".format(node_decimals, existing_decimals)))
+                else:
+                    'duplicate'
+                    #logging.info("Fact is dublicate")
+            node_dict[axis_or_member] = {date: fact, "{}_attrib".format(date): attrib}
     return node_dict
 def return_existing_facts_dict(ticker, form_type, date=None):
     if date:
@@ -1135,19 +1316,21 @@ def return_existing_facts_dict(ticker, form_type, date=None):
 def return_most_recent_facts_dict(ticker, form_type):
     folder_name = os.path.join("XBRL_Data", ticker.lower(), form_type)
     most_recent = None
-    if os.path.exists(folder_name):
-        for filename in os.listdir(folder_name):
-            #logging.info(filename)
-            if "_facts_dict.json" in filename:
-                ticker_date = filename.replace("_facts_dict.json", "")
-                #logging.info(ticker_date)
-                date = ticker_date.split("-")[1]
-                date_time_obj = datetime.datetime.strptime(date, "%Y%m%d")
-                if most_recent is None:
+    if not does_file_exist_in_dir(folder_name):
+        folder_name, form_type, make_folder = folder_path_form_type_conversion(ticker.lower(), form_type)
+    for filename in os.listdir(folder_name):
+        #logging.info(filename)
+        if "_facts_dict.json" in filename:
+            ticker_date = filename.replace("_facts_dict.json", "")
+            #logging.info(ticker_date)
+            date = ticker_date.split("-")[1]
+            date_time_obj = datetime.datetime.strptime(date, "%Y%m%d")
+            if most_recent is None:
+                most_recent = (date_time_obj, filename)
+            else:
+                if date_time_obj > most_recent[0]:
                     most_recent = (date_time_obj, filename)
-                else:
-                    if date_time_obj > most_recent[0]:
-                        most_recent = (date_time_obj, filename)
+
     file_path = os.path.join("XBRL_Data", ticker.lower(), form_type, most_recent[1])
     return import_json(file_path)
 #### extract xbrl data from tree ####
@@ -1172,7 +1355,7 @@ def get_data_node(root_node, attribute_name, date=None, subcategory=None):
             context_ref_list = [ref for ref in context_ref_list if not '_' in ref]
             if len(context_ref_list) > 1:
                 logging.error("More than one base category date")
-                #pp.pprint(context_ref_list)
+                #logging.info(pp.pformat(context_ref_list))
                 sys.exit()
             context_ref = context_ref_list[0]
         else:
@@ -1186,7 +1369,7 @@ def get_data_node(root_node, attribute_name, date=None, subcategory=None):
                 return
             if len(subcategory_list) > 1:
                 logging.error("More than one subcategory date")
-                #pp.pprint(context_ref_list)
+                #logging.info(pp.pformat(context_ref_list))
                 sys.exit()
             context_ref = subcategory_list[0]
         if context_ref:
@@ -1211,6 +1394,10 @@ def convert_to_datetime(string_date_YYYY_MM_DD):
         start_date = None
     else:
         logging.error("{} is not a valid date string".format(string_date_YYYY_MM_DD))
+        return [None, None, None]
+    if not (end_date[:4].isdigit() and end_date[5:7].isdigit() and end_date[8:].isdigit()):
+        logging.error("{} is not a valid date string".format(string_date_YYYY_MM_DD))
+        return [None, None, None]
     end_datetime_object = datetime.datetime.strptime(end_date, "%Y-%m-%d")
     if start_date:
         start_datetime_object = datetime.datetime.strptime(start_date, "%Y-%m-%d")
@@ -1222,12 +1409,13 @@ def convert_to_datetime(string_date_YYYY_MM_DD):
     return [end_datetime_object, start_datetime_object, time_delta]
 def y_or_q_and_form_type_from_limit_data(Y_or_Q, form_type):
     if form_type and not Y_or_Q:
-        if form_type == "10-K":
+        if form_type in ANNUAL_FORM_TYPES:
             Y_or_Q = "Y"
         elif form_type == "10-Q":
             Y_or_Q = "Q"
     elif Y_or_Q and not form_type:
         if Y_or_Q == "Y":
+            raise(Exception("cannot know if 10-K or 20-F or 40-F"))
             form_type = "10-K"
         elif Y_or_Q == "Q":
             form_type = "10-Q"
@@ -1236,106 +1424,8 @@ def y_or_q_and_form_type_from_limit_data(Y_or_Q, form_type):
         form_type = "10-K"
     return Y_or_Q, form_type
 def get_most_recent_data(root_node, attribute_name, Y_or_Q=None, form_type=None, subcategory=None):
+
     return get_most_recent_multiple_instances(root_node, attribute_name, 1, Y_or_Q=Y_or_Q, form_type=form_type, subcategory=subcategory)[0]
-    # if not Y_or_Q:
-    #     Y_or_Q, form_type = y_or_q_and_form_type_from_limit_data(Y_or_Q, form_type)
-
-    # context_dict = anytree.findall_by_attr(root_node, "context_dict", maxlevel=2)[0].attrib
-
-    # relevant_node = anytree.findall_by_attr(root_node, attribute_name, maxlevel=2)
-    # if not relevant_node:
-    #     logging.warning("no relevant node")
-    #     return
-
-    # if len(relevant_node) != 1:
-    #     logging.error("There are multiple attribute nodes with the same name. This should not happen.")
-    #     return
-
-    # relevant_node = relevant_node[0]
-
-    # node_contextRef_date_tuple_list = []
-
-    # for node in anytree.PreOrderIter(relevant_node):
-    #     #logging.info(node)
-    #     basic_contextRef = None
-    #     if subcategory:
-    #         contextRef = return_context_ref(node)
-    #         if contextRef:
-    #             if subcategory in contextRef:
-    #                 basic_contextRef = return_basic_context_ref(node)
-    #     elif is_basic_date_context_ref(node):
-    #         #logging.info('is basic_contextRef')
-    #         basic_contextRef = return_context_ref(node)
-    #         #print(basic_contextRef)
-    #     if basic_contextRef:
-    #         the_context = context_dict.get(basic_contextRef)
-    #         #logging.info(the_context)
-    #         node_contextRef_date_tuple_list.append([node, basic_contextRef, the_context])
-
-    # if not node_contextRef_date_tuple_list:
-    #     logging.warning("no nodes matched")
-
-    # narrowed_list = []
-    # if Y_or_Q == 'Y':
-    #     applicable_refs = ["YTD"]
-    # if Y_or_Q == 'Q':
-    #     applicable_refs = ["Q4", "Q3", "Q2", "Q1", "QTD"]
-    # for node_contextRef_date_tuple in node_contextRef_date_tuple_list:
-    #     for ref in applicable_refs:
-    #         if node_contextRef_date_tuple[1].endswith(ref):
-    #             narrowed_list.append(node_contextRef_date_tuple)
-    # node_contextRef_date_tuple_list = narrowed_list
-
-    # most_recent_time = datetime.datetime.strptime("0001-01-01", "%Y-%m-%d")
-    # most_recent_list = []
-    # for node_contextRef_date_tuple in node_contextRef_date_tuple_list:
-    #     context_date = node_contextRef_date_tuple[2]
-    #     end_datetime, start_date, time_delta = convert_to_datetime(context_date)
-    #     if end_datetime > most_recent_time:
-    #         most_recent_time = end_datetime
-    #         most_recent_list = [node_contextRef_date_tuple]
-    #     elif end_datetime == most_recent_time:
-    #         most_recent_list.append(node_contextRef_date_tuple)
-
-    # if not most_recent_list:
-    #     logging.warning("There are no facts that match that search")
-    #     return
-    # elif len(most_recent_list) == 1:
-    #     #logging.info([[x[1], x[2]] for x in most_recent_list])
-    #     return most_recent_list[0][0]
-    # else:
-    #     #logging.warning("There are more than one most recent, checking for duplicates")
-    #     ''' remove potential dublicates'''
-    #     fact_context_tuple_list = []
-    #     unique_data_list = []
-    #     for node_contextRef_date_tuple in most_recent_list:
-    #         data_node = node_contextRef_date_tuple[0]
-    #         contextRef = node_contextRef_date_tuple[1]
-    #         date = node_contextRef_date_tuple[2]
-    #         try:
-    #             fact = data_node.fact
-    #         except:
-    #             fact = None
-    #         #logging.info("{} {} {}".format(fact, contextRef, date))
-    #         data_tuple = (data_node.fact, contextRef, date)
-    #         if not data_tuple in fact_context_tuple_list:
-    #             fact_context_tuple_list.append(data_tuple)
-    #             unique_data_list.append(data_node)
-    #     #logging.info(unique_data_list)
-    #     if len(unique_data_list) == 1:
-    #         return unique_data_list[0]
-    #     else:
-    #         logging.warning("there are still more than one most recent piece of data")
-    #         # checking_y_or_q_list = []
-    #         # if Y_or_Q:
-    #         #     for data_node in unique_data_list:
-    #         #         data_tuple = (data_node.fact, data_node.attrib.get("contextRef"))
-    #         #         if data_tuple[1].endswith("{}TD".format(Y_or_Q)) in fact_context_tuple_list:
-    #         #             checking_y_or_q_list.append(data_node)
-    #         # if len(checking_y_or_q_list) > 1:
-    #         #    logging.warning("god damn it, there are still more than one most recent piece of data")
-    #         #    return checking_y_or_q_list
-    #         return checking_y_or_q_list[0]
 def get_most_recent_multiple_instances(root_node, attribute_name, number_of_instances, Y_or_Q=None, form_type=None, subcategory=None):
     if not Y_or_Q:
         Y_or_Q, form_type = y_or_q_and_form_type_from_limit_data(Y_or_Q, form_type)
@@ -1465,11 +1555,11 @@ def print_all_simple_context_refs(root_node):
     logging.info(len(simple_context_set))
     match_list = [match for match in matches]
     logging.info(len(match_list))
-    #pp.pprint(match_list)
+    #logging.info(pp.pformat(match_list))
     span_list = [match.span() for match in match_list]
     str_list = [big_string[span[0]: span[1]] for span in span_list]
-    #pp.pprint(str_list)
-    #pp.pprint([x for x in simple_context_set if x not in str_list])
+    #logging.info(pp.pformat(str_list))
+    #logging.info(pp.pformat([x for x in simple_context_set if x not in str_list]))
 def non_basic_context_ref_pattern(root_node, attribute_name = None):
     if not attribute_name:
         # print full contextref bases
@@ -1544,7 +1634,7 @@ def analayse_split_context_ref(node):
     #else
     if "Axis" in contextRef:
         dict_to_return.update(return_axis_based_context_ref_dict(split_contextRef))
-    #pp.pprint(dict_to_return)
+    #logging.info(pp.pformat(dict_to_return))
     return dict_to_return
 def return_axis_based_context_ref_dict(split_contextRef):
     dict_to_return = {}
@@ -1591,49 +1681,26 @@ testing_write_file = False
 force_download = False
 testing = False
 if __name__ == "__main__":
-    testing = True
     if testing:
+        ticker_cik_list = [("AAPL", 320193), ("GOOG", 1652044), ("MRVL", 1058057), ("GRMN", 1121788), ("STX", 1137789), ("BIDU", 1329099), ("INFY", 1067491), ("WCRX", 1323854), ("CHKP", 1015922), ("TEVA", 818686), ("FLEX", 866374), ("LOGI", 1032975)]
+
         randomize = False
         date_specific = False
         delete_after_import = False
         testing_write_file = True
         force_download = False
-        stock_ticker = 'aapl'
-        form = '10-Q'
+        for ticker_cik in ticker_cik_list:
+            form = '10-K'
+            forms = ["10-K", "10-Q"]
+            form_choice  = forms.index(form)
+            if randomize:
+                random_form = random.choice(forms)
+                logging.info(random_form)
+                form_choice = forms.index(random_form)
+            form_type = forms[form_choice]
 
-        appl = ('aapl', 320193, 2018, 9, 29)
-        ge = ('ge', 40545, 2018, 12, 31)
-        chuy = ('chuy', 1524931, 2018, 12, 30)
-        stocks = [appl, ge, chuy]
-        forms = ["10-K", "10-Q"]
-        form_choice  = forms.index(form)
-        if randomize:
-            random_form = random.choice(forms)
-            logging.info(random_form)
-            form_choice = forms.index(random_form)
-        form_type = forms[form_choice]
-
-        # stock_list = []
-        # for stock in []:stocks:
-        #     logging.info("{} {} {}".format(stock[0], stock[1], form_type))
-        #     if date_specific:
-        #         xbrl_tree_root = main_download_and_convert(stock[0], stock[1], form_type, year=stock[2], month=stock[3], day=stock[4])
-        #     else:
-        #         xbrl_tree_root = main_download_and_convert(stock[0], stock[1], form_type, delete_files_after_import=delete_after_import, force_download=force_download)
-        #     stock_list.append(xbrl_tree_root)
-
-        # stock_choice = [stock for stock in stock_list if stock.name.lower() == stock_ticker.lower()][0]
-        # if randomize:
-        #     stock_choice = random.choice(stock_list)
-
-        stock = stocks[0]
-        xbrl_tree_root = main_download_and_convert(stock[0], stock[1], form_type, delete_files_after_import=delete_after_import, force_download=force_download)
-        #my_dict = return_most_recent_facts_dict(stock[0], form)
-        #print(my_dict)
-        #logging.info(get_most_recent_data(apple_root, "LongTermDebtNoncurrent", "Q"))
-
-        #print("EntityCommonStockSharesOutstanding")
-        #get_most_recent_data(xbrl_tree_root, "EntityCommonStockSharesOutstanding", y_or_q_choice)
-
+            xbrl_tree_root = main_download_and_convert(ticker_cik[0].lower(), ticker_cik[1], form_type, delete_files_after_import=delete_after_import, force_download=force_download)
+            my_dict = return_most_recent_facts_dict(ticker_cik[0], form)
+            #logging.info(pp.pformat(unit_ref_list))
 
 #end of line
